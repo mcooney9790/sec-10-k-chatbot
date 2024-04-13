@@ -3,6 +3,7 @@ import streamlit as st
 from PyPDF2 import PdfReader
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings import HuggingFaceInstructEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain.memory import ConversationBufferMemory
@@ -11,51 +12,71 @@ from dotenv import load_dotenv
 from htmlTemplates import css, bot_template, user_template
 from sec_api import ExtractorApi, QueryApi
 from datetime import datetime
+import json
 
 
+# def year_to_date_range(year):
+#     #convert year into integer
+#     year_integer = int(year) - 1
+#
+#     # Calculate the start date (June of the previous year)
+#     start_date = datetime(year_integer, 6, 1)
+#
+#     # Calculate the end date (June of the input year)
+#     end_date = datetime(year, 6, 1)
+#
+#     # Return the date range
+#     return start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
 
-def year_to_date_range(year):
-    #convert year into integer
-    year_integer = int(year) - 1
+# def get_10k_link(tickername, filedatelower, fileddatehigher,api_key):
+#     queryapi = QueryApi(api_key)
+#     query = {
+#         "query": {"query_string": {
+#             "query": f"ticker:{tickername} AND filedAt:[{filedatelower} TO {fileddatehigher}] AND formType:\"10-K\"",
+#             "time_zone": "America/New_York"
+#         }},
+#         "from": "0",
+#         "size": "10",
+#         "sort": [{"filedAt": {"order": "desc"}}]
+#     }
+#     response = queryapi.get_filings(query)
+#     if response["total"]["value"] == 0:
+#         return
+#     else:
+#         company = response["filings"][0]["companyName"]
+#         filingUrl = response["filings"][0]["linkToFilingDetails"]
+#
+#         return company, filingUrl
 
-    # Calculate the start date (June of the previous year)
-    start_date = datetime(year_integer - 1, 6, 1)
+def get_10k_raw_text(ticker):
 
-    # Calculate the end date (June of the input year)
-    end_date = datetime(year_integer, 6, 1)
+    # Iterate over files in the directory
+    filepath = f"ten-k-docs-2023/{ticker}.json"
+    print(filepath)
+    with open(filepath, "r") as file:
+        try:
+            data = json.load(file)
+        except json.JSONDecodeError:
+            print(f"Error decoding JSON file: {filepath}")
 
-    # Return the date range
-    return start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d")
 
-def get_10k_link(tickername, filedatelower, fileddatehigher,api_key):
-    queryapi = QueryApi(api_key)
-    query = {
-        "query": {"query_string": {
-            "query": f"ticker:{tickername} AND filedAt:[{filedatelower} TO {fileddatehigher}] AND formType:\"10-K\"",
-            "time_zone": "America/New_York"
-        }},
-        "from": "0",
-        "size": "10",
-        "sort": [{"filedAt": {"order": "desc"}}]
-    }
-    response = queryapi.get_filings(query)
-    if response["total"]["value"] == 0:
-        return
-    else:
-        company = response["filings"][0]["companyName"]
-        filingUrl = response["filings"][0]["linkToFilingDetails"]
+            # Check if the file belongs to the specified ticker
+        final_text = ""
+        content = data.get("content", [])
+        for item in content:
+            section = item["section"]
+            text = item["text"]
+            section_text = (f"----------------------------------"
+                       f" This is Section {section}"
+                       f"----------------------------------"
+                            f"\n"
+                       f"{text}"
+                            f"\n")
 
-        return company, filingUrl
+            final_text += section_text
 
-def get_10k_raw_text(company, filing_10_k_url, api_key):
-    extractorApi = ExtractorApi(api_key)
 
-    item_1_text = extractorApi.get_section(filing_10_k_url,"1",'text')  # Risk Factors
-    item_1A_text = extractorApi.get_section(filing_10_k_url,"1A",'text')  # Risk Factors
-    item_7_text = extractorApi.get_section(filing_10_k_url, "7", 'text')  # Risk Factors
-    return (f"The following are the business overview, risk factors and management discussion and analysis within the 10-K "
-            f"filing of {company} BUSINESS OVERVIEW:{item_1_text} RISK FACTORS: {item_1A_text} MANAGEMENT "
-            f"DISCUSSION AND ANALYSIS: {item_7_text}")
+    return final_text.strip("&#160;")
 
 
 
@@ -71,8 +92,9 @@ def get_text_chunks(text):
 
 
 def get_vectorstore(text_chunks):
-    embeddings = OpenAIEmbeddings()
-    # embeddings = HuggingFaceInstructEmbeddings(model_name="hkunlp/instructor-xl")
+    #embeddings = OpenAIEmbeddings()
+    #hftoken = os.getenv('HUGGINGFACEHUB_API_TOKEN')
+    embeddings = HuggingFaceInstructEmbeddings(model_name="hkunlp/instructor-xl")
     vectorstore = FAISS.from_texts(texts=text_chunks, embedding=embeddings)
     return vectorstore
 
@@ -106,7 +128,6 @@ def handle_userinput(user_question):
 
 def main():
     load_dotenv()
-    sec_api_key = os.getenv('SEC_API_KEY')
     st.set_page_config(page_title="Chat with multiple PDFs",
                        page_icon=":books:")
     st.write(css, unsafe_allow_html=True)
@@ -123,15 +144,12 @@ def main():
 
     with st.sidebar:
         ticker = st.text_input("Insert the ticker symbol")
-        filing_year = st.text_input("What is the filing year?")
+
         if st.button("Find 10K"):
             with st.spinner("Processing"):
 
-                # get year range
-                startdate, enddate = year_to_date_range(year=filing_year)
-                company_name, filing_link = get_10k_link(ticker,startdate,enddate, sec_api_key)
-                raw_text = get_10k_raw_text(company_name, filing_link, sec_api_key)
-
+                raw_text = get_10k_raw_text(ticker)
+                print(len(raw_text))
                 # get the text chunks
                 text_chunks = get_text_chunks(raw_text)
 
